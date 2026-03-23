@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IndiaMART Lead Extractor</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo-area">
+        <img src="icons/icon48.png" alt="Logo" class="logo" />
+        <div>
+          <h1>Lead Extractor</h1>
+          <span class="subtitle">IndiaMART → Excel</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar">
+      <div class="stat-item">
+        <span class="stat-value" id="totalLeads">0</span>
+        <span class="stat-label">Leads Saved</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="currentProgress">—</span>
+        <span class="stat-label">Progress</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="skippedCount">0</span>
+        <span class="stat-label">Skipped</span>
+      </div>
+    </div>
+
+    <!-- Progress Bar -->
+    <div class="progress-wrapper" id="progressWrapper" style="display: none;">
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+      <span class="progress-text" id="progressText">0%</span>
+    </div>
+
+    <!-- Status Log -->
+    <div class="log-area" id="logArea">
+      <div class="log-entry info">Ready. Click "Start Extraction" to begin.</div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="actions">
+      <button id="btnStart" class="btn btn-primary">
+        <span class="btn-icon">▶</span> Start Extraction
+      </button>
+      <button id="btnStop" class="btn btn-danger" style="display: none;">
+        <span class="btn-icon">■</span> Stop
+      </button>
+      <button id="btnExport" class="btn btn-success">
+        <span class="btn-icon">💾</span> Download Excel
+      </button>
+      <button id="btnClear" class="btn btn-ghost">
+        <span class="btn-icon">🗑️</span> Clear Data
+      </button>
+    </div>
+  </div>
+
+  <script src="libs/xlsx.full.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
