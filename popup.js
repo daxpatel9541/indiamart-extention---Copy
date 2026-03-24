@@ -149,7 +149,18 @@ btnExport.addEventListener('click', () => {
     addLog(`Exporting ${response.leads.length} leads to Excel...`, 'extract');
 
     try {
-      const data = response.leads.map((lead, idx) => ({
+      // 1. Ensure absolute uniqueness (deduplicate by uniqueId)
+      const uniqueLeads = [];
+      const seenIds = new Set();
+      response.leads.forEach(lead => {
+        const id = lead.uniqueId || `${lead.companyName}_${lead.mobileNumber}`;
+        if (!seenIds.has(id)) {
+          uniqueLeads.push(lead);
+          seenIds.add(id);
+        }
+      });
+
+      const data = uniqueLeads.map((lead, idx) => ({
         'S.No': idx + 1,
         'Company Name': lead.companyName || '',
         'Mobile Number': lead.mobileNumber || '',
@@ -177,15 +188,21 @@ btnExport.addEventListener('click', () => {
       const ws = XLSX.utils.json_to_sheet(data);
 
       // Auto-width
-      const colWidths = Object.keys(data[0]).map(key => {
-        const maxLen = Math.max(key.length, ...data.map(r => String(r[key] || '').length));
-        return { wch: Math.min(maxLen + 2, 50) };
-      });
-      ws['!cols'] = colWidths;
+      if (data.length > 0) {
+        const colWidths = Object.keys(data[0]).map(key => {
+          const maxLen = Math.max(key.length, ...data.map(r => String(r[key] || '').length));
+          return { wch: Math.min(maxLen + 2, 50) };
+        });
+        ws['!cols'] = colWidths;
+
+        // ENABLE FILTERS (A1 to U1)
+        const lastColLetter = XLSX.utils.encode_col(Object.keys(data[0]).length - 1);
+        ws['!autofilter'] = { ref: `A1:${lastColLetter}1` };
+      }
 
       XLSX.utils.book_append_sheet(wb, ws, 'Leads');
       XLSX.writeFile(wb, 'IndiaMart_Leads.xlsx');
-      addLog('✅ Excel downloaded: IndiaMart_Leads.xlsx', 'success');
+      addLog('✅ Excel downloaded (Unique records with Filters)', 'success');
     } catch (err) {
       addLog(`Export error: ${err.message}`, 'error');
     }

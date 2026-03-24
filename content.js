@@ -36,11 +36,15 @@
     });
   }
 
-  function generateUniqueId(companyName, address) {
-    const str = `${(companyName || '').trim().toLowerCase()}__${(address || '').trim().toLowerCase()}`;
+  function generateUniqueId(companyName, address, mobile = '') {
+    // Priority 1: Mobile + Address (Most unique)
+    // Priority 2: Company Name + Address
+    const base = mobile ? `${mobile.replace(/\D/g, '')}__${(address || '').trim().toLowerCase()}` : 
+                          `${(companyName || '').trim().toLowerCase()}__${(address || '').trim().toLowerCase()}`;
+    
     let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    for (let i = 0; i < base.length; i++) {
+      hash = ((hash << 5) - hash) + base.charCodeAt(i);
       hash |= 0;
     }
     return 'lead_' + Math.abs(hash).toString(36);
@@ -299,26 +303,31 @@
 
       // 2. Extract Company Name (Most stable text element)
       const nameEl = msgEl.querySelector('b, strong, [class*="name"], [class*="company"]');
-      const name = nameEl ? nameEl.textContent.trim().replace(/\s+/g, ' ') : '';
+      const name = nameEl ? nameEl.textContent.trim().toLowerCase().replace(/\s+/g, ' ') : '';
       
       // 3. Extract Location
       const locationEl = msgEl.querySelector('[class*="location"], [class*="city"]');
-      const loc = locationEl ? locationEl.textContent.trim().replace(/\s+/g, ' ') : '';
+      const loc = locationEl ? locationEl.textContent.trim().toLowerCase().replace(/\s+/g, ' ') : '';
       
       // 4. Extract first few words of preview, but strip any trailing time-like strings
       const previewEl = msgEl.querySelector('[class*="preview"], [class*="msg-text"], [class*="desc"]');
-      let preview = previewEl ? previewEl.textContent.trim() : '';
-      // Remove trailing words that look like relative time (e.g. "2 min ago", "just now")
-      preview = preview.replace(/\d+\s*(min|hr|day|week|month|year)s?\s*ago.*$/i, '')
-                      .replace(/just\s*now.*$/i, '')
-                      .substring(0, 40).replace(/\s+/g, ' ');
+      let preview = previewEl ? previewEl.textContent.trim().toLowerCase() : '';
+      
+      // STRIP DYNAMIC CONTENT: Remove relative times like "2 min ago", "12:30 PM", etc.
+      preview = preview.replace(/\d+[:.]\d+\s*(am|pm)?/gi, '') // 12:30 pm
+                      .replace(/\d+\s*(min|hr|h|d|day|week|month|year)s?\s*ago/gi, '') // 2 mins ago
+                      .replace(/just\s*now/gi, '')
+                      .replace(/(yesterday|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/gi, '')
+                      .replace(/\d+\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/gi, '')
+                      .replace(/\s+/g, ' ').trim();
 
       if (!name && !loc && !preview) {
         // Absolute fallback, but clean it heavily
-        return msgEl.innerText.replace(/\s+/g, ' ').substring(0, 50).toLowerCase();
+        return msgEl.innerText.toLowerCase().replace(/\d/g, '').replace(/\s+/g, ' ').substring(0, 50).trim();
       }
 
-      return `${name}|${loc}|${preview}`.toLowerCase().trim();
+      // Combine Name + Location + a slice of preview for a robust signature
+      return `${name}|${loc}|${preview.substring(0, 30)}`.trim();
     } catch (e) {
       return msgEl.innerText.trim().substring(0, 60).toLowerCase();
     }
@@ -556,14 +565,21 @@
     function findValueByLabel(labelText) {
       const allEls = container.querySelectorAll('div, span, td, p, b, strong, label');
       for (const el of allEls) {
-        if (el.children.length > 5) continue; 
+        if (el.children.length > 8) continue; // Relaxed child count
         const text = el.textContent.trim();
-        // Exact match or Label: match
-        if (text === labelText || text.startsWith(labelText + ':') || (text.startsWith(labelText) && text.length < labelText.length + 3)) {
-          // Case 1: Value is in the same element after a colon
+        
+        // Fuzzy match: label can be part of the text
+        if (text.toLowerCase().includes(labelText.toLowerCase())) {
+          // Case 1: Value is in the same element after a colon or just after the label
           if (text.includes(':')) {
             const parts = text.split(':');
             if (parts.length > 1 && parts[1].trim().length > 0) return parts[1].trim();
+          }
+          
+          // Case 1b: If text starts with label and is longer, the rest might be the value
+          if (text.toLowerCase().startsWith(labelText.toLowerCase()) && text.length > labelText.length + 2) {
+            const val = text.substring(labelText.length).trim().replace(/^[:\s-]+/, '');
+            if (val.length > 0 && val.length < 100) return val;
           }
 
           // Case 2: Value is the NEXT sibling element
@@ -572,17 +588,13 @@
             return next.textContent.trim();
           }
 
-          // Case 3: Label and value are children of a common parent (Label first, then Value)
+          // Case 3: Parent-based check (Label and value are siblings)
           const parent = el.parentElement;
-          if (parent && parent.children.length >= 2) {
-            // Check if label is first child
-            if (parent.children[0] === el && parent.children[1].textContent.trim().length > 0) {
-              return parent.children[1].textContent.trim();
-            }
-            // Check if label and value are just concatenated in parent text
+          if (parent) {
             const pText = parent.textContent.trim();
-            if (pText.startsWith(labelText) && pText.length > labelText.length + 3) {
-              return pText.replace(labelText, '').trim().replace(/^[:\s-]+/, '');
+            if (pText.toLowerCase().includes(labelText.toLowerCase()) && pText.length > labelText.length + 3) {
+              const val = pText.replace(new RegExp(labelText, 'i'), '').trim().replace(/^[:\s-]+/, '');
+              if (val.length > 0 && val.length < 500) return val;
             }
           }
         }
@@ -673,7 +685,7 @@
     data.ownerName = findValueByLabel('Company Owner');
     data.totalEmployees = findValueByLabel('Total Number of Employees');
     data.yearEstablished = findValueByLabel('Year of Establishment');
-    data.memberSince = findValueByLabel('IndiaMART Member Since');
+    data.memberSince = findValueByLabel('IndiaMART Member Since') || findValueByLabel('Member Since');
     data.annualTurnover = findValueByLabel('Annual Turnover');
     data.gstNumber = findValueByLabel('GST No.');
     data.panNumber = findValueByLabel('PAN');
@@ -685,9 +697,10 @@
       if (sellsSection) data.products = sellsSection.textContent.replace('Sells', '').trim().substring(0, 500);
     }
 
-    // Generate unique ID
-    data.uniqueId = generateUniqueId(data.companyName, data.address);
-    sendLog(`📊 Extracted: ${data.companyName || 'Unknown'}`, 'extract');
+    // Generate unique ID based on Mobile and Address (More robust than Company Name)
+    data.uniqueId = generateUniqueId(data.companyName, data.address, data.mobileNumber);
+    
+    sendLog(`📊 Extracted: ${data.companyName || 'Unknown'} (ID: ${data.uniqueId})`, 'extract');
     return data;
   }
 
@@ -802,15 +815,14 @@
       await waitForDomStable(3000);
 
       const processedSignatures = new Set();
+      let lastProcessedSignature = null;
       let totalExtracted = 0;
       let consecutiveEmptyScrolls = 0;
-      const MAX_EMPTY_SCROLLS = 8; 
-      const MAX_TOTAL_LEADS = 500; // Safety valve
+      const MAX_EMPTY_SCROLLS = 5; 
+      const MAX_TOTAL_LEADS = 500; 
       
-      // Find the scrollable list container (the left panel)
       let listParent = null;
 
-      // Process messages incrementally
       while (!shouldStop && totalExtracted < MAX_TOTAL_LEADS) {
         const messages = getMessageItems();
         if (messages.length > 0 && !listParent) listParent = messages[0].parentElement;
@@ -818,19 +830,38 @@
         // Filter for un-processed messages
         const newMessages = messages.filter(msg => {
           const sig = getMessageSignature(msg);
-          return !processedSignatures.has(sig);
+          // STOP CONDITION: If session signature exists, don't re-process
+          if (processedSignatures.has(sig)) return false;
+          // IMPORTANT: Double check against the very last processed message
+          if (sig === lastProcessedSignature) return false;
+          return true;
         });
 
         if (newMessages.length === 0) {
+          // STRICT STOP CONDITION: 
+          // 1. If we are at the bottom
+          // 2. OR if the last message in the current list has already been processed
+          const isAtBottom = listParent && (listParent.scrollTop + listParent.clientHeight >= listParent.scrollHeight - 20);
+          
+          let lastMessageProcessed = false;
+          if (messages.length > 0) {
+            const lastSig = getMessageSignature(messages[messages.length - 1]);
+            if (processedSignatures.has(lastSig)) lastMessageProcessed = true;
+          }
+
+          if (isAtBottom && lastMessageProcessed) {
+            sendLog('Reached end of list and last message already processed. Stopping.', 'success');
+            break;
+          }
+
           consecutiveEmptyScrolls++;
           if (consecutiveEmptyScrolls >= MAX_EMPTY_SCROLLS) {
-            sendLog('No more new messages found. Finishing...', 'success');
+            sendLog('No more new messages found after multiple scrolls. Finishing...', 'success');
             break;
           }
           
           if (listParent) {
             sendLog(`Scanning... (Attempt ${consecutiveEmptyScrolls})`, 'info');
-            // Scroll down to load more
             listParent.scrollTop += 600;
             await sleep(2000);
             await waitForDomStable(1500);
@@ -913,6 +944,7 @@
           });
 
           if (saveResp && saveResp.success) {
+            lastProcessedSignature = sig; // Update last processed tracker
             sendProgress(totalExtracted, 0, leadData.companyName, 'extracted');
             chrome.runtime.sendMessage({ type: 'leadCount', count: saveResp.newCount });
           } else if (saveResp && saveResp.reason === 'duplicate') {
