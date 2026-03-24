@@ -24,6 +24,15 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  function normalizeText(text) {
+    if (!text) return '';
+    return text
+      .replace(/\s+/g, ' ')
+      .replace(/[×xX✕]\s*$/g, '') // Remove close button 'X' from end of strings
+      .replace(/view details\s*[«»›>]?\s*$/gi, '') // Remove "View Details" noise
+      .trim();
+  }
+
   function waitForDomStable(timeout = 2000) {
     return new Promise(resolve => {
       let timer;
@@ -387,86 +396,101 @@
   // ============================================
   // STEP 2.5: Extract mobile from chat header
   // ============================================
-  function extractMobileFromHeader() {
+  async function extractMobileFromHeader(expectedName = '') {
     // Target: Chat header (top-right section near company name and icons)
     sendLog('Scanning chat header for mobile number...', 'info');
     
     const phoneRegex = /(\+?\d[\d\-\s]{8,15}\d)/g;
     let headerContainer = null;
 
-    // Strategy 1: Look for tel: links anywhere in the top area (Very reliable)
-    const telLinks = document.querySelectorAll('a[href^="tel:"]');
-    for (const link of telLinks) {
-       if (link.offsetWidth > 0) {
-         const num = link.href.replace('tel:', '').trim();
-         if (num.replace(/\D/g, '').length >= 10) {
-           sendLog(`Found mobile via tel link: ${num}`, 'success');
-           return num;
-         }
-       }
-    }
-
-    // Strategy 2: Look for "last seen" or phone icons to find header
-    const iconSelectors = [
-      '[class*="phone-icon"]', '[class*="contact-icon"]', '[class*="call-icon"]',
-      'i[class*="phone"]', 'i[class*="call"]', '.mc_rt_top', '.chat-header'
+    // High priority: Specific IndiaMART header classes
+    const knownHeaderSelectors = [
+      '.mc_rt_top', '.chat-header', '[class*="chat-panel"] [class*="top"]',
+      '.topHdr', '[class*="Header"]', '[class*="top-section"]', '.mc_rt_hd'
     ];
     
-    for (const sel of iconSelectors) {
-      const el = document.querySelector(sel);
-      if (el && el.offsetWidth > 0) {
-        headerContainer = el.closest('div[class*="header"], div[class*="top"], div[class*="panel"]');
-        if (headerContainer) break;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      for (const sel of knownHeaderSelectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el && el.offsetWidth > 0) {
+            const text = el.innerText.toLowerCase();
+            if (expectedName) {
+               if (text.includes(expectedName.toLowerCase())) {
+                 headerContainer = el;
+                 break;
+               }
+            } else {
+              headerContainer = el;
+              break;
+            }
+          }
+        } catch(e) {}
       }
-    }
-
-    if (!headerContainer) {
-      // Strategy 3: Find "View Details" and look at its siblings/parent
-      const vdBtn = findViewDetailsButton();
-      if (vdBtn) {
-        headerContainer = vdBtn.parentElement;
-        // Walk up to find a larger header container
-        for (let d = 0; d < 3; d++) {
-          if (headerContainer && headerContainer.offsetWidth > 300) break;
-          if (headerContainer) headerContainer = headerContainer.parentElement;
+      if (headerContainer) break;
+      
+      // Fallback within attempt: search for any div containing the name that's at the top
+      if (expectedName && attempt > 3) {
+        const potentialHeaders = Array.from(document.querySelectorAll('div, header, section')).filter(el => {
+          return el.offsetHeight > 40 && el.offsetHeight < 150 && 
+                 el.getBoundingClientRect().top < 200 &&
+                 el.innerText.toLowerCase().includes(expectedName.toLowerCase());
+        });
+        if (potentialHeaders.length > 0) {
+          headerContainer = potentialHeaders[0];
+          break;
         }
       }
+      
+      await sleep(400); // Wait for header to update
     }
 
     if (!headerContainer) {
-      // Fallback Strategy: Search for "last seen"
-      const allEls = document.querySelectorAll('div, span, p');
-      for (const el of allEls) {
-        if (el.offsetWidth > 0 && el.textContent.toLowerCase().includes('last seen')) {
-           headerContainer = el.parentElement;
-           for (let d = 0; d < 3; d++) {
-             if (headerContainer && headerContainer.offsetWidth > 300) break;
-             if (headerContainer) headerContainer = headerContainer.parentElement;
-           }
-           if (headerContainer) break;
-        }
-      }
-    }
-
-    // Final Fallback: The main right-side top panel
-    if (!headerContainer) {
-      headerContainer = document.querySelector('[class*="chat-panel"] [class*="top"], #chatPanel [class*="top"], .mc_rt_top');
+       sendLog(`Header mismatch or not found for "${expectedName}". Scanning all top elements...`, 'warn');
     }
 
     if (headerContainer) {
-      // Clean up text and find potential numbers
       const text = headerContainer.innerText;
       const matches = text.match(phoneRegex);
       if (matches) {
         for (const match of matches) {
           const digits = match.replace(/\D/g, '');
-          // IndiaMART numbers are usually 10-13 digits. 
-          // Avoid matching ratings like "3.9 (47)" or memberships like "3 yrs"
           if (digits.length >= 10 && digits.length <= 13) {
-            // Check if it's near a label or has a specific format
             sendLog(`Found mobile in header text: ${match}`, 'success');
             return match.trim();
           }
+        }
+      }
+    }
+
+    // Strategy 2: Look for tel: links anywhere in the top area (Very reliable)
+    const telLinks = document.querySelectorAll('a[href^="tel:"]');
+    for (const link of telLinks) {
+       const rect = link.getBoundingClientRect();
+       if (rect.top < 300 && rect.width > 0) {
+         const num = link.href.replace('tel:', '').trim();
+         if (num.replace(/\D/g, '').length >= 10) {
+           sendLog(`Found mobile via tel link in top area: ${num}`, 'success');
+           return num;
+         }
+       }
+    }
+
+    // Strategy 3: Aggressive Scan of Top-Right Quadrant
+    const topElements = Array.from(document.querySelectorAll('span, div, b, strong, a, p')).filter(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.top < 200 && rect.left > window.innerWidth * 0.4 && rect.width > 0;
+    });
+
+    for (const el of topElements) {
+      if (el.children.length > 0) continue; // Only check leaf nodes
+      const text = el.textContent.trim();
+      if (phoneRegex.test(text)) {
+        const match = text.match(phoneRegex)[0];
+        const digits = match.replace(/\D/g, '');
+        if (digits.length >= 10 && digits.length <= 13) {
+          sendLog(`Found mobile via top-right scan: ${match}`, 'success');
+          return match;
         }
       }
     }
@@ -478,57 +502,63 @@
   // ============================================
   // STEP 3: Wait for and find the detail panel
   // ============================================
-  async function waitForDetailPanel() {
+  async function waitForDetailPanel(expectedName = '') {
     // From screenshots: the detail panel is a modal/side panel with sections:
     // "Contact Details", "Reviews and Ratings", "Fact Sheet"
-    // It has an "x" close button at the top
-
-    for (let attempt = 0; attempt < CONFIG.MAX_RETRIES; attempt++) {
+    
+    for (let attempt = 0; attempt < CONFIG.MAX_RETRIES + 4; attempt++) {
       await sleep(1000);
 
-      // Look for "Contact Details" or "Fact Sheet" text appearing
-      const allElements = document.querySelectorAll('*');
-      for (const el of allElements) {
-        const text = el.textContent.trim();
-        if (el.offsetWidth > 150 && el.offsetHeight > 300 &&
-            (text.includes('Contact Details') || text.includes('Fact Sheet')) &&
-            (text.includes('Business Type') || text.includes('Year of Establishment') ||
-             text.includes('Company Owner') || text.includes('GST'))) {
-          // This is likely the detail panel or one of its parents
-          // Find the most specific container that has all sections
-          let container = el;
-          while (container.parentElement &&
-                 container.parentElement !== document.body &&
-                 container.parentElement.offsetWidth < window.innerWidth * 0.6) {
-            container = container.parentElement;
-          }
-          sendLog('Found detail panel with Fact Sheet content', 'success');
+      // Look for any modal/dialog that contains "Contact Details"
+      const candidates = Array.from(document.querySelectorAll('div, [role="dialog"]')).filter(el => {
+        if (el.offsetWidth < 200 || el.offsetHeight < 200) return false;
+        const text = el.textContent;
+        // Basic signature of the IndiaMART fact sheet modal
+        return text.includes('Contact Details') && (text.includes('Fact Sheet') || text.includes('Business Type') || text.includes('Establishment'));
+      });
+
+      for (const modal of candidates) {
+        // Find the specific container (walk up to find the root of the modal if needed)
+        let container = modal;
+        while (container.parentElement && 
+               container.parentElement !== document.body && 
+               container.parentElement.offsetWidth < window.innerWidth * 0.8) {
+          container = container.parentElement;
+        }
+
+        // VERIFICATION: Does the title match our expected company?
+        if (expectedName) {
+           // Find all potential title elements
+           const headings = Array.from(container.querySelectorAll('h1, h2, h3, h4, [class*="title"], [class*="name"], b, strong'));
+           let foundMatch = false;
+           
+           for (const el of headings) {
+             const titleText = normalizeText(el.textContent);
+             // Skip known section headers
+             if (!titleText || /contact detail|review|fact sheet|satisfaction|business type/i.test(titleText)) continue;
+             
+             if (titleText.toLowerCase().includes(expectedName.toLowerCase()) || 
+                 expectedName.toLowerCase().includes(titleText.toLowerCase())) {
+               sendLog(`Confirmed detail panel for: ${titleText}`, 'success');
+               foundMatch = true;
+               break;
+             }
+           }
+           
+           if (foundMatch) return container;
+           
+           // If we found headers but none matched the name, log the first non-empty one for debug
+           const firstHeader = headings.map(h => normalizeText(h.textContent)).filter(t => t.length > 2)[0];
+           sendLog(`Modal headers found, but no match for "${expectedName}". (Top header: "${firstHeader}"). Still waiting...`, 'info');
+        } else {
           return container;
         }
       }
 
-      // Also check for modals / dialogs
-      const modalSelectors = [
-        '[role="dialog"]', '.modal.show', '[class*="modal"][style*="display: block"]',
-        '[class*="detail-panel"]', '[class*="detailPanel"]',
-        '[class*="company-detail"]', '[class*="companyDetail"]',
-      ];
-      for (const sel of modalSelectors) {
-        try {
-          const modal = document.querySelector(sel);
-          if (modal && modal.offsetWidth > 150 && modal.offsetHeight > 200 &&
-              modal.textContent.includes('Contact Details')) {
-            sendLog(`Found detail panel via modal selector: ${sel}`, 'success');
-            return modal;
-          }
-        } catch (e) {}
-      }
-
-      sendLog(`Waiting for detail panel (attempt ${attempt + 1})...`, 'info');
+      sendLog(`Waiting for detail panel update (attempt ${attempt + 1})...`, 'info');
     }
 
-    // Fallback: return null
-    sendLog('Detail panel not found after retries', 'warn');
+    sendLog(`Detail panel not found or title mismatch for "${expectedName}" after retries`, 'warn');
     return null;
   }
 
@@ -563,39 +593,73 @@
 
     // --- Helper: Find value for a specific label ---
     function findValueByLabel(labelText) {
-      const allEls = container.querySelectorAll('div, span, td, p, b, strong, label');
+      if (!container) return '';
+      // Prioritize small elements that specifically contain the label
+      const allEls = Array.from(container.querySelectorAll('div, span, td, p, b, strong, label, th, dt, dd'));
+      
       for (const el of allEls) {
-        if (el.children.length > 8) continue; // Relaxed child count
-        const text = el.textContent.trim();
+        // Skip hidden elements or huge containers
+        if (el.offsetWidth === 0 || el.children.length > 3) continue;
         
-        // Fuzzy match: label can be part of the text
-        if (text.toLowerCase().includes(labelText.toLowerCase())) {
-          // Case 1: Value is in the same element after a colon or just after the label
-          if (text.includes(':')) {
-            const parts = text.split(':');
-            if (parts.length > 1 && parts[1].trim().length > 0) return parts[1].trim();
+        const rawText = el.textContent.trim();
+        if (!rawText) continue;
+
+        // Clean label for matching
+        const cleanLabel = labelText.toLowerCase().replace(/[:\s]+$/, '');
+        const cleanText = rawText.toLowerCase();
+
+        // Check if this element matches the label
+        // We want it to be either EXACTLY the label, or START with the label (+ colon/space)
+        const isExactMatch = (cleanText === cleanLabel);
+        
+        // Starts with match: "Label: " or "Label "
+        const startsWithMatch = cleanText.startsWith(cleanLabel) && (
+           cleanText === cleanLabel || 
+           /^[:\s\-]/.test(rawText.substring(labelText.length))
+        );
+
+        if (isExactMatch || startsWithMatch) {
+          // Case A: Value is in the same element (e.g. "Label: Value")
+          if (rawText.includes(':')) {
+            const parts = rawText.split(':');
+            if (parts.length > 1) {
+              const val = normalizeText(parts.slice(1).join(':'));
+              if (val) {
+                console.log(`[IM-Extractor] Found ${labelText} (Same-El): "${val}"`);
+                return val;
+              }
+            }
           }
           
-          // Case 1b: If text starts with label and is longer, the rest might be the value
-          if (text.toLowerCase().startsWith(labelText.toLowerCase()) && text.length > labelText.length + 2) {
-            const val = text.substring(labelText.length).trim().replace(/^[:\s-]+/, '');
-            if (val.length > 0 && val.length < 100) return val;
+          if (startsWithMatch) {
+             const val = normalizeText(rawText.substring(labelText.length).replace(/^[:\s\-]+/, ''));
+             if (val) {
+                console.log(`[IM-Extractor] Found ${labelText} (Starts-With): "${val}"`);
+                return val;
+             }
           }
 
-          // Case 2: Value is the NEXT sibling element
+          // Case B: Value is in the next sibling
           let next = el.nextElementSibling;
-          if (next && next.textContent.trim().length > 0 && next.textContent.trim().length < 500) {
-            return next.textContent.trim();
+          if (next) {
+            const val = normalizeText(next.textContent);
+            if (val && val.length < 300) {
+              console.log(`[IM-Extractor] Found ${labelText} (Sibling): "${val}"`);
+              return val;
+            }
           }
 
-          // Case 3: Parent-based check (Label and value are siblings)
+          // Case C: Value is in parent's next sibling
           const parent = el.parentElement;
-          if (parent) {
-            const pText = parent.textContent.trim();
-            if (pText.toLowerCase().includes(labelText.toLowerCase()) && pText.length > labelText.length + 3) {
-              const val = pText.replace(new RegExp(labelText, 'i'), '').trim().replace(/^[:\s-]+/, '');
-              if (val.length > 0 && val.length < 500) return val;
-            }
+          if (parent && parent.children.length <= 2) {
+             const pNext = parent.nextElementSibling;
+             if (pNext) {
+                const val = normalizeText(pNext.textContent);
+                if (val && val.length < 300) {
+                  console.log(`[IM-Extractor] Found ${labelText} (Parent-Sibling): "${val}"`);
+                  return val;
+                }
+             }
           }
         }
       }
@@ -603,48 +667,38 @@
     }
 
     // --- 1. Company Name (Top of modal) ---
-    // If the modal has a better one than the list, we'll use it.
     const topHeading = container ? container.querySelector('h1, h2, h3, h4, [class*="title"], [class*="name"]') : null;
     if (topHeading) {
-      // Clean the header: Remove common close button patterns ('X' at the end)
-      let headerText = topHeading.textContent.trim();
-      // If it ends with a lone 'X', it's likely the close button
-      headerText = headerText.replace(/\s+X$/i, '').replace(/X$/, '').trim();
-      
+      const headerText = normalizeText(topHeading.textContent);
       if (headerText.length > 3 && !headerText.includes('Details') && !headerText.includes('Reviews')) {
         data.companyName = headerText;
-      }
-    }
-
-    // Fallback if still empty
-    if (!data.companyName && container) {
-      const bolds = container.querySelectorAll('b, strong');
-      for (const b of bolds) {
-        const bt = b.textContent.trim();
-        if (bt.length > 5 && bt.length < 60 && !bt.includes('Details') && !bt.includes('Reviews')) {
-          data.companyName = bt;
-          break;
-        }
       }
     }
 
     // --- 2. Contact Details Section ---
     const contactSection = findSectionByHeading(container, 'Contact Details');
     if (contactSection) {
-      const texts = Array.from(contactSection.querySelectorAll('div, p, span'))
-        .map(i => i.textContent.trim())
-        .filter(t => t.length > 2 && t.length < 300 && !t.includes('Contact Details'));
+      // Use clean innerText instead of querySelectorAll tags to avoid recursive duplication
+      const fullText = contactSection.innerText;
+      const lines = fullText.split('\n')
+        .map(l => normalizeText(l))
+        .filter(l => l.length > 2 && !l.toLowerCase().includes('contact details'));
       
-      if (texts.length > 0) {
-        data.contactPerson = texts[0];
-        data.address = texts.slice(1).join(', ').substring(0, 300);
+      // Usually: Line 1 = Name, Lines 2+ = Address
+      if (lines.length > 0) {
+        data.contactPerson = lines[0];
+        data.address = lines.slice(1).join(', ').substring(0, 400);
       }
 
-      // Try icon-based picking if above is messy
-      const personIcon = contactSection.querySelector('[class*="user"], [class*="person"], [class*="contact"]');
-      if (personIcon) {
-        const p = personIcon.parentElement;
-        if (p && p.textContent.trim().length < 60) data.contactPerson = p.textContent.trim();
+      // Refinement: if there's a bold element, it's likely the person
+      const boldEl = contactSection.querySelector('b, strong');
+      if (boldEl) {
+        const boldText = normalizeText(boldEl.textContent);
+        if (boldText && boldText.length < 60) {
+           data.contactPerson = boldText;
+           // Address is lines that aren't the person
+           data.address = lines.filter(l => l !== boldText).join(', ').substring(0, 400);
+        }
       }
     }
 
@@ -673,34 +727,45 @@
     // --- 5. Customer Reviews ---
     const custReviewSection = findSectionByHeading(container, 'Customer Reviews');
     if (custReviewSection) {
-      const reviews = Array.from(custReviewSection.querySelectorAll('div'))
-        .filter(d => d.textContent.trim().length > 20 && d.children.length < 5)
-        .map(d => d.textContent.trim().replace(/\s+/g, ' '));
+      const reviews = Array.from(custReviewSection.querySelectorAll('div, p'))
+        .filter(d => d.textContent.trim().length > 20 && d.children.length < 3)
+        .map(d => normalizeText(d.textContent));
       data.review1 = reviews[0] || '';
       data.review2 = reviews[1] || '';
     }
 
-    // --- 6. Fact Sheet ---
-    data.businessType = findValueByLabel('Business Type');
-    data.ownerName = findValueByLabel('Company Owner');
-    data.totalEmployees = findValueByLabel('Total Number of Employees');
-    data.yearEstablished = findValueByLabel('Year of Establishment');
-    data.memberSince = findValueByLabel('IndiaMART Member Since') || findValueByLabel('Member Since');
-    data.annualTurnover = findValueByLabel('Annual Turnover');
-    data.gstNumber = findValueByLabel('GST No.');
-    data.panNumber = findValueByLabel('PAN');
-    data.products = findValueByLabel('Sells');
+    // --- 6. Fact Sheet (Robust Extraction) ---
+    const factSheet = findSectionByHeading(container, 'Fact Sheet') || container;
+    
+    const factLabels = {
+      'Business Type': 'businessType',
+      'Company Owner': 'ownerName',
+      'Total Number of Employees': 'totalEmployees',
+      'Year of Establishment': 'yearEstablished',
+      'IndiaMART Member Since': 'memberSince',
+      'Member Since': 'memberSince',
+      'Annual Turnover': 'annualTurnover',
+      'GST No.': 'gstNumber',
+      'GST': 'gstNumber',
+      'PAN': 'panNumber',
+      'Sells': 'products'
+    };
 
-    // Extra fallback for Products/Sells from "Sells" section
-    if (!data.products) {
-      const sellsSection = findSectionByHeading(container, 'Sells');
-      if (sellsSection) data.products = sellsSection.textContent.replace('Sells', '').trim().substring(0, 500);
+    for (const [label, key] of Object.entries(factLabels)) {
+       if (!data[key]) {
+         data[key] = findValueByLabel(label);
+       }
     }
 
-    // Generate unique ID based on Mobile and Address (More robust than Company Name)
+    if (!data.products) {
+      const sellsSection = findSectionByHeading(container, 'Sells');
+      if (sellsSection) data.products = normalizeText(sellsSection.textContent.replace('Sells', ''));
+    }
+
     data.uniqueId = generateUniqueId(data.companyName, data.address, data.mobileNumber);
     
-    sendLog(`📊 Extracted: ${data.companyName || 'Unknown'} (ID: ${data.uniqueId})`, 'extract');
+    console.log('[IM-Extractor] FINAL LEAD DATA:', data);
+    sendLog(`📊 Extracted: ${data.companyName}`, 'extract');
     return data;
   }
 
@@ -898,7 +963,7 @@
           await waitForDomStable(2000);
 
           // EXTRA STEP: Extract mobile from header
-          const headerMobile = extractMobileFromHeader();
+          const headerMobile = await extractMobileFromHeader(listCompanyName);
 
           // Find and click "View Details"
           let vdBtn = null;
@@ -922,16 +987,23 @@
           await sleep(CONFIG.DETAIL_LOAD_DELAY);
           await waitForDomStable(3000);
 
-          // Wait for detail panel
-          const detailPanel = await waitForDetailPanel();
+          // Wait for detail panel (ensure it matches the current lead!)
+          const detailPanel = await waitForDetailPanel(listCompanyName);
 
           // SCROLL DETAIL PANEL
           if (detailPanel) {
-            for (let s = 0; s < 2; s++) {
-              detailPanel.scrollTop = (s + 1) * 500;
-              await sleep(500);
+            sendLog('Scrolling detail panel to trigger lazy loading...', 'info');
+            // Try to find the actual scrollable element inside the modal
+            const scrollable = [detailPanel, ...detailPanel.querySelectorAll('*')].find(el => {
+              const style = window.getComputedStyle(el);
+              return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
+            }) || detailPanel;
+
+            for (let s = 1; s <= 3; s++) {
+              scrollable.scrollTop = s * 600;
+              await sleep(800);
             }
-            detailPanel.scrollTop = 0;
+            scrollable.scrollTop = 0;
             await sleep(500);
           }
 
